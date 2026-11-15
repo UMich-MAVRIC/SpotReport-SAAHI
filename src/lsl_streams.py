@@ -1,5 +1,5 @@
 # LSL inlet and outlet streams
-from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop,resolve_stream, cf_float32, cf_int32, IRREGULAR_RATE
+from pylsl import StreamInfo, StreamOutlet, StreamInlet, resolve_byprop,resolve_streams, cf_float32, cf_int32, IRREGULAR_RATE
 import pygame
 from pygame.locals import *
 
