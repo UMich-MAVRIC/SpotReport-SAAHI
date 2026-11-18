@@ -1,4 +1,7 @@
 # Main File to run the Spot Report
+import os
+import signal
+import sys
 import pygame
 import time
 import threading
@@ -9,9 +12,19 @@ from score import Score
 from mouse import Mouse
 from lsl_streams import read_lsl_inlet
 
+
+# Ctrl+C, or the operator GUI closing this process (SIGTERM), ends it cleanly: the loops are
+# left by an exception, the finally block in __main__ closes the window, and the LSL reader
+# thread (a daemon) does not keep the process alive. The CSVs are appended to as events
+# happen, so nothing already recorded is lost.
+def _exit_on_signal(signum, frame):
+    print(f"Spot report: received {signal.Signals(signum).name}, closing")
+    sys.exit(0)
+
+
 # Training Loop
 def training_loop(training_imgs, training_dict, new_press):
-    
+
     img_ID_training = 0 # index of the training image
     score = 0
     people_val, vehicle_val, bags_val, barrels_val, antennas_val = 0, 0, 0, 0, 0 # user counts
@@ -21,7 +34,7 @@ def training_loop(training_imgs, training_dict, new_press):
     mode = 0 # set mode to 0 to calculate score from correct dictionary
 
     while training_running:
-        
+
         screen.fill('white')
         timer.tick(fps)
         file_extention = '' # file extention not needed since nothing is saved during training
@@ -54,8 +67,8 @@ def training_loop(training_imgs, training_dict, new_press):
         Disp_Setup.count_object_labels(args, screen, obj_vals)
 
         # Button for Next
-        next_button = Button(args, screen, 'Next', args.next_xpos, args.next_ypos) 
-                
+        next_button = Button(args, screen, 'Next', args.next_xpos, args.next_ypos)
+
         # labels for target object types, 'score' and score value
         Disp_Setup.labels(args, screen, score)
 
@@ -76,7 +89,7 @@ def training_loop(training_imgs, training_dict, new_press):
                 return
             else:
                 screen.blit(training_imgs[img_ID_training], (args.img_xpos, args.img_ypos)) # display the next image
-            
+
 
         # Check if we want to exit training and if mouse button was released
         for event in pygame.event.get():
@@ -102,17 +115,19 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
     # strings to hold subID and condition inputs
     subID_text_input = ''
     condition_text_input = ''
-    
+
     # rect objects to surround the user inputs
     # these are part of this loop to detect collisions for typing in the subID and condition inputs
     subID_rect = pygame.rect.Rect((140, 80), (140, 35)) # create rect object to surround subID_text_input
     condition_rect = pygame.rect.Rect((463, 80), (140, 35)) # create rect object to surround condition_text_input
-       
+
     # boolean of whether the user inputs are active for typing
     active_subID_box = False
     active_condNo_box = False
 
-    mode = 0 #control boolean indicating 0 for training images mode or 1 for task images mode
+    # 0 until training is done, 1 once Start is allowed. --skip-training starts at 1, so
+    # Start works straight away (Training can still be run from the menu)
+    mode = 1 if skip_training else 0
     start_task_time = 0 #timer for the time spent on each image
 
     # loop for the menu screen
@@ -133,7 +148,13 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
                training_loop(training_imgs, training_dict, new_press)
                mode = 1 # set the mode to 1 so the task loop can run now. can still do training again if desired.
 
-        if start_button.check_click(new_press) and mode == 1:
+        # Without training in between, nothing else has checked the ID boxes yet; empty ones
+        # would name the output files "S_C.csv"
+        if start_button.check_click(new_press) and mode == 1 and (subID_text_input == '' or condition_text_input == ''):
+           new_press = False
+           print("Please fill in the Subject Id and Condition")
+
+        elif start_button.check_click(new_press) and mode == 1:
            new_press = False # reset to True in loop when mouse button is released
            menu_running = False
            SR_task_running = True # the only way to set this to True is by clicking Start
@@ -159,7 +180,7 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
                     active_condNo_box = True
                 else:
                     active_condNo_box = False
-            
+
             if event.type == pygame.KEYDOWN and active_subID_box: # if a key is pressed and the subID textbox is active
                 if event.key == pygame.K_BACKSPACE: # if backspace is pressed, remove the last character
                     subID_text_input = subID_text_input[:-1]
@@ -174,8 +195,14 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
 
             elif event.type == pygame.MOUSEBUTTONUP: # when the pressed mouse button is released
                 new_press = True # the next mouse button press is a new press
-                
+
         pygame.display.flip() # update the full display screen
+
+    # Closed from the menu (window X or Escape) without starting the task: there is nothing
+    # to record, so leave before any output file is created. (Previously this fell through
+    # and wrote empty "S_C.csv" headers, which crashed if the output folder was missing.)
+    if not SR_task_running:
+        return
 
     # task images loop
     img_ID = 0 # index of the task image
@@ -189,7 +216,7 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
 
     #set the extention for the output files based on the subID and condNo
     file_extention = 'S'+ subID_text_input + '_C' + condition_text_input + '.csv'
-    
+
     # write the headers for the output files
     Score.score_files_header(args, file_extention) # for both score and accuracy files
     Score.task_time_header(args, file_extention)
@@ -202,7 +229,7 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
                 lockout_end_time = time.time() #the end time of the lockout
                 coming_from_lockout = False
                 subtract_lockout = True #true means we need to subtract the lockout time from the time spent on the image
-        
+
             screen.fill('white')
             timer.tick(fps)
 
@@ -234,8 +261,8 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
             Disp_Setup.count_object_labels(args, screen, obj_vals)
 
             # Button for Next
-            next_button = Button(args, screen, 'Next', args.next_xpos, args.next_ypos) 
-            
+            next_button = Button(args, screen, 'Next', args.next_xpos, args.next_ypos)
+
             # labels for target object types, 'score' and score value
             Disp_Setup.labels(args, screen, score)
 
@@ -249,7 +276,7 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
                 score += new_points
                 people_val, vehicle_val, bags_val, barrels_val, antennas_val = 0, 0, 0, 0, 0 # reset counts for next image
                 obj_vals = [people_val, vehicle_val, bags_val, barrels_val, antennas_val]
-              
+
                 if subtract_lockout:
                     task_time = (end_task_time - start_task_time) - (lockout_end_time - lockout_start_time)
                     subtract_lockout = False
@@ -284,7 +311,7 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
                 if event.key == pygame.K_ESCAPE:
                     SR_task_running = False
                 if event.key == pygame.K_l: # if the 'L' key is pressed
-                    lockout = True # spot report is locked 
+                    lockout = True # spot report is locked
                 if event.key == pygame.K_u: # if the 'U' key is pressed
                     lockout =  False # spot report is unlocked
             if event.type == pygame.MOUSEBUTTONUP: # when the pressed mouse button is released
@@ -292,24 +319,23 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
                 Mouse.write_mouse_button(args, img_ID, "Released", file_extention) # write to csv and send data to LSL
             if event.type == pygame.MOUSEBUTTONDOWN: #when the mouse button is pressed
                 Mouse.write_mouse_button(args, img_ID, "Pressed", file_extention) # write to csv and send data to LSL
-            if event.type == pygame.MOUSEMOTION: #when the mouse cursor moves 
+            if event.type == pygame.MOUSEMOTION: #when the mouse cursor moves
                 Mouse.write_mouse_pos(args, img_ID, event.pos, file_extention) # write to csv and send data to LSL
 
         pygame.display.flip() # update the full display screen
-    
-    pygame.quit() # if we reached here, it is because we want to quit pygame
-    return # after quitting pygame, return to start_asyncio_loop() function
+
+    return # pygame is closed by the finally block in __main__
 
 
-async def start_asyncio_loop(): 
-    # Create a separate thread for reading LSL data
-    lsl_thread = threading.Thread(target=read_lsl_inlet)
+async def start_asyncio_loop():
+    # A separate thread for reading LSL data. Daemon, so it can never hold the process open
+    # after the window closes: read_lsl_inlet waits on its stream indefinitely, and the old
+    # join() here blocked forever whenever no LSL stream was present (or the loop crashed).
+    lsl_thread = threading.Thread(target=read_lsl_inlet, daemon=True)
     lsl_thread.start() # start the thread
 
     # loop with menu, training, and task
     loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_press)
-
-    lsl_thread.join() # wait until thread is completely executed
 
     return
 
@@ -317,28 +343,50 @@ async def start_asyncio_loop():
 # Main Function
 if __name__ == "__main__":
 
+    signal.signal(signal.SIGINT, _exit_on_signal)
+    signal.signal(signal.SIGTERM, _exit_on_signal)
+
     pygame.init() # initialize all imported modules, including font
-    args = input_args() # optional arguments from user for design/device specifics (e.g., screen size)
 
-    screen = pygame.display.set_mode([args.width, args.height]) # display surface with screen width and height
-    fps = 60
-    timer = pygame.time.Clock() # clock object for keeping track of time
+    # Our own flag, taken off the command line before input_args() sees it
+    skip_training = '--skip-training' in sys.argv
+    if skip_training:
+        sys.argv.remove('--skip-training')
+        print("Spot report: training is optional this run (--skip-training)")
 
-    font = pygame.font.SysFont(args.font_type, 1) # set the font type and size. Font size is different throughout and set as needed
-    pygame.display.set_caption("Spot Report") # name of the window caption
+    try:
+        args = input_args() # optional arguments from user for design/device specifics (e.g., screen size)
 
-    new_press = True # if the next mouse click is a new press
+        # The output folder is created if missing, rather than every CSV write failing in it
+        out = getattr(args, 'output', None)
+        if out:
+            os.makedirs(out, exist_ok=True)
+            print(f"Spot report output: {out}")
 
-    # read in the answer keys
-    training_dict, task_dict = load_ans_files(args)
+        screen = pygame.display.set_mode([args.width, args.height]) # display surface with screen width and height
+        fps = 60
+        timer = pygame.time.Clock() # clock object for keeping track of time
 
-    # read in the training images
-    training_imgs = load_images(args, key="train")
+        font = pygame.font.SysFont(args.font_type, 1) # set the font type and size. Font size is different throughout and set as needed
+        pygame.display.set_caption("Spot Report") # name of the window caption
 
-    # read in the task images
-    task_imgs = load_images(args, key="task",noOfImages=25)
+        new_press = True # if the next mouse click is a new press
 
-    # read in the example objects for the menu
-    ex_img = ex_menu_image(args)
-    
-    asyncio.run(start_asyncio_loop()) #start LSL and main loop
+        # read in the answer keys
+        training_dict, task_dict = load_ans_files(args)
+
+        # read in the training images
+        training_imgs = load_images(args, key="train")
+
+        # read in the task images
+        task_imgs = load_images(args, key="task",noOfImages=250)
+
+        # read in the example objects for the menu
+        ex_img = ex_menu_image(args)
+
+        asyncio.run(start_asyncio_loop()) #start LSL and main loop
+
+    finally:
+        # Whatever ended the run (finished, closed, Escape, a signal or an error), the window
+        # goes away; an error's traceback still prints after this
+        pygame.quit()
