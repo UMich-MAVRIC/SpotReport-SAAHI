@@ -1,5 +1,7 @@
 # Main File to run the Spot Report
+import csv
 import os
+import random
 import signal
 import sys
 import pygame
@@ -112,9 +114,10 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
     menu_running = True
     SR_task_running = False
 
-    # strings to hold subID and condition inputs
-    subID_text_input = ''
-    condition_text_input = ''
+    # strings to hold subID and condition inputs; prefilled when the study launch passed
+    # them (--subject-id / --condition), still editable in the boxes
+    subID_text_input = preset_subject
+    condition_text_input = preset_condition
 
     # rect objects to surround the user inputs
     # these are part of this loop to detect collisions for typing in the subID and condition inputs
@@ -205,7 +208,21 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
         return
 
     # task images loop
-    img_ID = 0 # index of the task image
+    # The task images are shown in a shuffled order. img_ID stays the image's real index
+    # (what the answer key, scoring and every CSV use); pos is how far through the order we
+    # are. Each pass through all the images gets a fresh order. --no-shuffle keeps 0, 1, 2...
+    order_rng = random.Random(shuffle_seed)
+    order_pass = 1
+
+    def new_order():
+        order = list(range(len(task_imgs)))
+        if shuffle_images:
+            order_rng.shuffle(order)
+        return order
+
+    order = new_order()
+    pos = 0
+    img_ID = order[pos] # index of the task image
     people_val, vehicle_val, bags_val, barrels_val, antennas_val = 0, 0, 0, 0, 0 # user counts of objects
     obj_vals = [people_val, vehicle_val, bags_val, barrels_val, antennas_val]
     score = 0
@@ -216,6 +233,23 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
 
     #set the extention for the output files based on the subID and condNo
     file_extention = 'S'+ subID_text_input + '_C' + condition_text_input + '.csv'
+
+    # The order shown, one row per image per pass, so any run can be reconstructed
+    order_path = os.path.join(getattr(args, 'output', '') or '.', 'image_order_' + file_extention)
+
+    def write_order(order, pass_no):
+        try:
+            new = not os.path.exists(order_path)
+            with open(order_path, 'a', newline='') as f:
+                w = csv.writer(f)
+                if new:
+                    w.writerow(['pass', 'position', 'img_ID', 'seed', 'shuffled'])
+                for i, idx in enumerate(order):
+                    w.writerow([pass_no, i, idx, shuffle_seed, int(shuffle_images)])
+        except Exception as e:
+            print(f"Spot report: could not write the image order ({e})")
+
+    write_order(order, order_pass)
 
     # write the headers for the output files
     Score.score_files_header(args, file_extention) # for both score and accuracy files
@@ -285,13 +319,15 @@ def loop(args, screen, task_imgs, training_imgs, task_dict, training_dict, new_p
                 Score.write_task_time(args, img_ID, task_time, file_extention) # write to csv and send data to LSL
                 start_task_time = end_task_time # set the end time as the starting time for the next image
 
-                img_ID += 1 # increment the img_ID
-                # if last task image, reset img_ID back to 0 to loop through images again
-                if img_ID >= len(task_imgs):
-                    img_ID = 0
-                    screen.blit(task_imgs[img_ID], (args.img_xpos, args.img_ypos))
-                else:
-                    screen.blit(task_imgs[img_ID], (args.img_xpos, args.img_ypos)) # display the next image
+                # next image in the order; after the last one, start a new pass in a new order
+                pos += 1
+                if pos >= len(order):
+                    order_pass += 1
+                    order = new_order()
+                    write_order(order, order_pass)
+                    pos = 0
+                img_ID = order[pos]
+                screen.blit(task_imgs[img_ID], (args.img_xpos, args.img_ypos)) # display the next image
 
         else: # spot report is locked
             screen.fill('black')
@@ -353,6 +389,30 @@ if __name__ == "__main__":
     if skip_training:
         sys.argv.remove('--skip-training')
         print("Spot report: training is optional this run (--skip-training)")
+
+    # Subject ID and condition from the study launch, to prefill the menu's boxes. Also taken
+    # off the command line first, so input_args() never sees options it does not know.
+    def _take_option(name):
+        if name in sys.argv:
+            i = sys.argv.index(name)
+            value = sys.argv[i + 1] if i + 1 < len(sys.argv) else ''
+            del sys.argv[i:i + 2]
+            return value
+        return ''
+
+    # Task image order: shuffled by default (--no-shuffle for the fixed order). The seed is
+    # random unless --seed N is given, and is saved in image_order_*.csv either way.
+    shuffle_images = '--no-shuffle' not in sys.argv
+    if not shuffle_images:
+        sys.argv.remove('--no-shuffle')
+    seed_arg = _take_option('--seed')
+    shuffle_seed = int(seed_arg) if seed_arg else random.SystemRandom().randrange(2**31)
+    print(f"Spot report: task images {'shuffled, seed ' + str(shuffle_seed) if shuffle_images else 'in fixed order'}")
+
+    preset_subject = _take_option('--subject-id')
+    preset_condition = _take_option('--condition')
+    if preset_subject or preset_condition:
+        print(f"Spot report: subject '{preset_subject}', condition '{preset_condition}'")
 
     try:
         args = input_args() # optional arguments from user for design/device specifics (e.g., screen size)
